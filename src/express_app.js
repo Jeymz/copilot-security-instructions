@@ -1,11 +1,26 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { logger } from 'copilot-instructions-mcp/core';
 import { reqInfo } from 'copilot-instructions-mcp/middlewares';
 import mcpServer from './mcp_server.js';
 
 const app = express();
 
+app.disable('x-powered-by');
+
+app.use(express.json({
+  limit: '1mb',
+  type: ['application/json', 'application/*+json'],
+}));
+
 app.use(reqInfo);
+
+const mcpRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 app.get('/', (req, res) => {
   logger.info('Received request for homepage', {
@@ -19,7 +34,7 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
-app.get('/mcp', (req, res) => {
+app.get('/mcp', mcpRateLimit, (req, res) => {
   // TODO: Log request details
   /** TODO: Implement MCP Server GET Specification
       Specification 1: The client MAY issue an HTTP GET to the MCP endpoint. This can be used to open an SSE stream, allowing the server to communicate to the client, without the client first sending data via HTTP POST.
@@ -39,37 +54,60 @@ app.get('/mcp', (req, res) => {
   return res.status(405).send('Method Not Allowed');
 });
 
-app.post('/mcp', async (req, res) => {
-  // TODO: Log request details
-  /** TODO: Send Request to `mcp_server` for proper handling
-      Every JSON-RPC message sent from the client MUST be a new HTTP POST request to the MCP endpoint.
-      1. The client MUST use HTTP POST to send JSON-RPC messages to the MCP endpoint.
-      2. The client MUST include an Accept header, listing both application/json and text/event-stream as supported content types.
-      3. The body of the POST request MUST be a single JSON-RPC request, notification, or response.
-      4. If the input is a JSON-RPC response or notification:
-         - If the server accepts the input, the server MUST return HTTP status code 202 Accepted with no body.
-         - If the server cannot accept the input, it MUST return an HTTP error status code (e.g., 400 Bad Request). The HTTP response body MAY comprise a JSON-RPC error response that has no id.
-      5. If the input is a JSON-RPC request, the server MUST either return Content-Type: text/event-stream, to initiate an SSE stream, or Content-Type: application/json, to return one JSON object. The client MUST support both these cases.
-      6. If the server initiates an SSE stream:
-         - The SSE stream SHOULD eventually include JSON-RPC response for the JSON-RPC request sent in the POST body.
-         - The server MAY send JSON-RPC requests and notifications before sending the JSON-RPC response. These messages SHOULD relate to the originating client request.
-         - The server SHOULD NOT close the SSE stream before sending the JSON-RPC response for the received JSON-RPC request, unless the session expires.
-         - After the JSON-RPC response has been sent, the server SHOULD close the SSE stream.
-         - Disconnection MAY occur at any time (e.g., due to network conditions). Therefore:
-           - Disconnection SHOULD NOT be interpreted as the client cancelling its request.
-           - To cancel, the client SHOULD explicitly send an MCP CancelledNotification.
-           - To avoid message loss due to disconnection, the server MAY make the stream resumable.
-  */
-  // await server.connect(transport);
+app.post('/mcp', mcpRateLimit, async (req, res) => {
   logger.info('Received MCP POST request', {
     source: 'express_app.post(/mcp)',
     reqInfo: req.info,
   });
 
-  const mcp = mcpServer();
-  await mcp.server.connect(mcp.transport);
-  await mcp.transport.handleRequest(req, res, req.body);
-  // return res.status(200).send('OK'); // Temporary response
+  try {
+    const mcp = mcpServer();
+    await mcp.server.connect(mcp.transport);
+    return await mcp.transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    logger.error('Unhandled error while processing MCP POST request', {
+      source: 'express_app.post(/mcp)',
+      reqInfo: req.info,
+      error: {
+        message: error?.message || String(error),
+        stack: error?.stack,
+      },
+    });
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32603,
+          message: 'Internal error',
+        },
+        id: null,
+      });
+    }
+  }
+  return res.status(500).end();
+});
+
+// Ensure JSON parse errors are returned consistently (and do not leak stacks)
+// This runs after route handlers when express.json() throws.
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.parse.failed') {
+    logger.warn('Invalid JSON body received', {
+      source: 'express_app.jsonParser',
+      reqInfo: req.info,
+    });
+
+    return res.status(400).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32700,
+        message: 'Parse error: Invalid JSON',
+      },
+      id: null,
+    });
+  }
+
+  return next(err);
 });
 
 export default app;

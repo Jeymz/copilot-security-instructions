@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { logger } from 'copilot-instructions-mcp/core';
 import { prompts } from 'copilot-instructions-mcp/mcp_prompts';
 
@@ -7,7 +8,7 @@ function list_prompts(server) {
     {
       title: 'List Prompts',
       description: 'A tool to list all available prompts',
-      inputSchema: {},
+      inputSchema: z.object({}),
     },
     async () => {
       logger.info('List prompts tool called', {

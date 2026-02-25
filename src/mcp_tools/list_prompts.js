@@ -8,7 +8,7 @@ function list_prompts(server) {
     {
       title: 'List Prompts',
       description: 'A tool to list all available prompts',
-      inputSchema: z.object({}),
+      inputSchema: {},
     },
     async () => {
       logger.info('List prompts tool called', {

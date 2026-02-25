@@ -27,6 +27,7 @@ function get_prompt(server) {
             type: 'text',
             text: `Prompt not found: ${args.promptName}`,
           }],
+          isError: true,
         };
       }
       return {
